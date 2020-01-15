@@ -3,12 +3,10 @@ const readline = require('readline');
 
 const TYPE_DIMS = 'dims';
 const TYPE_WEIGHT = 'weight';
-
 const KEY_MODEL = 'model';
 const KEY_VOLUME = 'volume';
 const KEY_WEIGHT = 'weight';
-const KEY_PER = 'squareMmPerGram';
-const accum = {};
+const KEY_PER = 'cubicMmPerGram';
 
 const calcVolume = parts => {
 	const mmRegex= /^\d.+\.?\d?\smm/;
@@ -22,83 +20,10 @@ const calcVolume = parts => {
 const calcWeight = weightStr => {
 	const gramsRegex= /^\d.+\.?\d?\sg/;
 	return parseInt(weightStr.trim().match(gramsRegex)[0]);
-}
+};
 
-const recordModel = (model, key, val, accum) => {
-	if (typeof accum[model] === 'undefined') {
-		accum[model] = {
-			[KEY_MODEL]: model, 
-			[KEY_VOLUME]: null, 
-			[KEY_WEIGHT]: null, 
-			[KEY_PER]: null
-		};
-	}
-	accum[model][key] = val;
-
-	if (accum[model][KEY_WEIGHT] && accum[model][KEY_VOLUME]) {
-		accum[model][KEY_PER] = (accum[model][KEY_VOLUME] / accum[model][KEY_WEIGHT]).toFixed(2);
-	}
-}
-
-const parseFile = (file, type) => 
-	new Promise((resolve, reject) => {
-		const reader = readline.createInterface({
-			input: fs.createReadStream(file),
-			output: null,
-			console: false,
-		});
-
-		let parts = [];
-		const lines = [];
-
-		const recordDim = parts => {
-			const model = parts[0].replace(':', '');
-			const volume = calcVolume(parts);
-			
-			model.split(' & ').forEach(model => {
-				recordModel(model, KEY_VOLUME, volume, accum);
-			});
-			lines.push(`"${model}",${volume}`);
-		}
-
-		reader.on('line', line => {
-			if (type === TYPE_DIMS) {
-				if (/:/.test(line) === true) {
-					if (parts.length) {
-						recordDim(parts);
-					}
-					parts = [line];
-				}else {
-					parts.push(line);
-				}
-			} else {
-				const split = line.split(':');
-				const model = split[0];
-				const weight = calcWeight(split[1]);
-
-				model.split(' and ').forEach(model => {
-					recordModel(model, KEY_WEIGHT, weight, accum);
-				});
-
-				lines.push(`"${model}",${weight}`);
-			}
-		});
-
-		reader.on('close', () => {
-			// get the last line
-			if (parts.length) {
-				recordDim(parts);
-			}
-
-			resolve(lines);
-		})
-	});
-
-(async () => {
-	await parseFile('./dims.csv', TYPE_DIMS);
-	await parseFile('./weight.csv', TYPE_WEIGHT);
-
-	const sortOrder = [
+const sort = accum => {
+	const order = [
 		'1st gen',
 		'3G',
 		'3GS',
@@ -125,7 +50,7 @@ const parseFile = (file, type) =>
 		'11 Pro Max'
 	];
 
-	const final = Object
+	return Object
 		.keys(accum)
 		.map(key => ([
 			accum[key][KEY_MODEL],
@@ -134,9 +59,94 @@ const parseFile = (file, type) =>
 			accum[key][KEY_PER],
 		]))
 		.sort((a, b) => {
-			return sortOrder.indexOf(a[0]) > sortOrder.indexOf(b[0]) ? 1 : -1;
+			return order.indexOf(a[0]) > order.indexOf(b[0]) ? 1 : -1;
+		});
+};
+
+const convertToCsv = sorted => 
+	sorted
+		.map(data => data.join(','))
+		.join('\n');
+
+const recordModel = (model, key, val, accum) => {
+	if (typeof accum[model] === 'undefined') {
+		accum[model] = {
+			[KEY_MODEL]: model, 
+			[KEY_VOLUME]: null, 
+			[KEY_WEIGHT]: null, 
+			[KEY_PER]: null
+		};
+	}
+	accum[model][key] = val;
+
+	if (accum[model][KEY_WEIGHT] && accum[model][KEY_VOLUME]) {
+		accum[model][KEY_PER] = (accum[model][KEY_VOLUME] / accum[model][KEY_WEIGHT]).toFixed(2);
+	}
+}
+
+const parseFile = (file, type, accum) => 
+	new Promise((resolve, reject) => {
+		const reader = readline.createInterface({
+			input: fs.createReadStream(file),
+			output: null,
+			console: false,
 		});
 
-	const csvStr = final.map(data => data.join(',')).join('\n');
+		let parts = [];
+
+		const recordDim = parts => {
+			const model = parts[0].replace(':', '');
+			const volume = calcVolume(parts);
+			
+			model.split(' & ').forEach(model => {
+				recordModel(model, KEY_VOLUME, volume, accum);
+			});
+		}
+
+		reader.on('line', line => {
+			switch (type) {
+				case TYPE_DIMS:
+					if (/:/.test(line) === true) {
+						if (parts.length) {
+							recordDim(parts);
+						}
+						parts = [line];
+					}else {
+						parts.push(line);
+					}
+					break;
+
+				case TYPE_WEIGHT:
+					const split = line.split(':');
+					const model = split[0];
+					const weight = calcWeight(split[1]);
+
+					model.split(' and ').forEach(model => {
+						recordModel(model, KEY_WEIGHT, weight, accum);
+					});
+					break;
+
+				default:
+					throw new Error(`Type "${type}" is invalid.`);
+			}
+		});
+
+		reader.on('close', () => {
+			// get the last line
+			if (parts.length) {
+				recordDim(parts);
+			}
+
+			resolve(true);
+		})
+	});
+
+(async () => {
+	const accum = {};
+	await parseFile('./dims.csv', TYPE_DIMS, accum);
+	await parseFile('./weight.csv', TYPE_WEIGHT, accum);
+
+	const sorted = sort(accum);
+	const csvStr = convertToCsv(sorted);
 	console.log(csvStr);
 })()
